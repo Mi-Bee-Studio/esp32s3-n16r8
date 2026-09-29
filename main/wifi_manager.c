@@ -41,6 +41,9 @@ static char  s_ip_str[16]      = "0.0.0.0";
 static bool s_using_secondary = false;    /* 当前激活的凭据组 */
 static int  s_net_switches    = 0;        /* 本轮开机的网络切换次数（防乒乓） */
 static char s_current_ssid[33] = "";      /* 当前实际连接的 SSID */
+static TickType_t s_ip_granted_tick = 0;   /* 最近一次 GOT_IP 时刻 */
+static bool s_link_flap = false;          /* 连接存活 <60s：切换预算不清零（2026-09-29 unit-2 教训：GOT_IP 即清零让 NET_MAX_SWITCHES 在"连上又被踢"风暴里形同虚设） */
+#define LINK_STABLE_MS     (60 * 1000)    /* 连接存活超过此值才算"稳" */
 #define NET_FAILS_SWITCH   2              /* 当前网连续失败 N 次后切备用 */
 #define NET_MAX_SWITCHES   6              /* 超过则放弃转 AP */
 #define DHCP_TIMEOUT_MS    12000          /* 关联后无 IP 判 DHCP 盲区（PIT：ai-thinker 教训） */
@@ -153,12 +156,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             break;
         }
 
-        case WIFI_EVENT_STA_DISCONNECTED:
+        case WIFI_EVENT_STA_DISCONNECTED: {
+            const wifi_event_sta_disconnected_t *disc = event_data;
             s_sta_connected = false;
             xEventGroupClearBits(s_event_group, CONNECTED_BIT);
             s_sta_retry_count++;
-            ESP_LOGW(TAG, "STA disconnected from '%s' (fail %d)",
-                     s_current_ssid, s_sta_retry_count);
+            /* reason 码入日志（2026-09-29 unit-2 排障教训：无 reason 的
+             * disconnect 无法区分 AP 踢人/认证失败/信标丢失） */
+            ESP_LOGW(TAG, "STA disconnected from '%s' (fail %d, reason=%d)",
+                     s_current_ssid, s_sta_retry_count,
+                     disc ? disc->reason : -1);
+            /* 短命连接标记：防"连上即清零"打穿切换预算 */
+            if (s_ip_granted_tick > 0 &&
+                (xTaskGetTickCount() - s_ip_granted_tick) * portTICK_PERIOD_MS < LINK_STABLE_MS) {
+                s_link_flap = true;
+            } else if (s_ip_granted_tick > 0) {
+                s_link_flap = false;   /* 稳过 60s 的连接：预算可恢复 */
+            }
             status_led_set_color(STATUS_LED_RED);
 
             /* 主网连续失败 → 先试备用网，再谈 AP 兜底 */
@@ -176,6 +190,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             }
             esp_wifi_connect();
             break;
+        }
 
         case WIFI_EVENT_AP_START:
             ESP_LOGI(TAG, "AP mode started");
@@ -191,7 +206,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             snprintf(s_ip_str, sizeof(s_ip_str),
                      IPSTR, IP2STR(&evt->ip_info.ip));
             s_sta_retry_count = 0;
-            s_net_switches    = 0;      /* 连上即清零：允许下次掉线再转移 */
+            s_ip_granted_tick = xTaskGetTickCount();
+            if (!s_link_flap) {
+                s_net_switches = 0;     /* 稳定连接才恢复转移预算；短命
+                                         * 连接不清零，防震荡打穿上限 */
+            }
             s_sta_connected   = true;
             save_last_net();
             xEventGroupSetBits(s_event_group, CONNECTED_BIT);
