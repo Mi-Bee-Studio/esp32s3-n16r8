@@ -8,6 +8,49 @@ ESP32-S3-N16R8 + OV3660 camera firmware with MJPEG streaming, AI detection, RTSP
 - **Camera**: **OV3660** (3 MP, 1/5" sensor, max QXGA 2048×1536)
 - **USB**: USB-Serial/JTAG (enumerates as `/dev/ttyACM0`)
 
+### Board Overview
+
+| Item | Value |
+|------|-------|
+| Board | GOOUUU ESP32-S3-CAM N16R8 carrier (pin map below is the GOOUUU wiring — other N16R8 boards may differ) |
+| Module | ESP32-S3-WROOM-1 **N16R8** — Xtensa LX7 dual-core @ 240 MHz |
+| Flash | 16 MB Quad SPI |
+| PSRAM | 8 MB **Octal** (`SPIRAM_MODE_OCT` — NOT Quad; frame buffers live here, `fb_count=2`) |
+| Wireless | 2.4 GHz WiFi b/g/n + BLE 5 |
+| USB | USB Type-C — USB-Serial/JTAG (console + flashing, no bridge chip) |
+| Camera | OV3660, sensor PID `0x77`, JPEG output |
+| Partitions | Dual OTA slots in the 16 MB flash |
+
+### Pinout Diagram (USB-C pointing up, front/component-side view; GOOUUU board)
+
+```
+                 ┌─ USB-C ─┐
+   Camera (DVP) → │ ESP32-S3 │ ← TF / module antenna area
+                 │  WROOM-1 │
+                 │  N16R8   │
+                 └──────────┘
+  Camera (SCCB) → SIOD=IO4 · SIOC=IO5          XCLK=IO15
+  Camera bus    → D0=IO11 · D1=IO9 · D2=IO8 · D3=IO10 · D4=IO12
+                  D5=IO18 · D6=IO17 · D7=IO16
+  Camera timing → VSYNC=IO6 · HREF=IO7 · PCLK=IO13
+  PWDN/RESET    → not connected (-1)
+```
+
+Full pin map, PSRAM constraints and the partition plan: [docs/hardware.md](docs/hardware.md).
+
+## Firmware Baseline Norms
+
+Two baselines are mandatory fleet-wide for every MiBee firmware repo:
+
+1. **Watchdog: mandatory.** ✅ This firmware: ESP-IDF task watchdog (TWDT 10 s,
+   panic on timeout) with named per-task registration (`watchdog_register_current`)
+   and periodic feeding (`watchdog_feed_current`).
+2. **Web/API firmware upgrade (OTA): mandatory where the hardware allows.**
+   ✅ This firmware: dual OTA slots + the `/api/ota` family
+   (`/api/ota/upload`, `/api/ota/info`, `/api/ota/spiffs`) plus `esp_https_ota`
+   pull-style updates; wired flashing (serialtap/esptool) remains the recovery
+   path, not a substitute.
+
 ## Features
 
 - 📷 **MJPEG streaming** — real-time video via HTTP
