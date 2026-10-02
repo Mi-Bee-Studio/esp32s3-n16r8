@@ -83,6 +83,7 @@ static bool load_last_net(void)
 #define STA_CONNECT_TIMEOUT_MS  15000   /* 15 s before AP fallback */
 #define AP_CHANNEL          6
 #define AP_MAX_CONNECTIONS  4
+#define AP_STA_RETRY_MS     (30 * 60 * 1000)  /* AP 兜底后周期重试间隔（PIT-060） */
 
 /* ---- forward declarations ---------------------------------------- */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -93,6 +94,9 @@ static void get_ap_ssid(char *buf, size_t len);
 static void start_ap(void);
 static void switch_to_ap(void);
 static bool ap_fallback(void);   /* AP 兜底闸门（allow_ap_fallback，契约 §3.1） */
+static void connection_monitor_task(void *arg);
+static void start_sta(void);
+static void ap_sta_retry_task(void *arg);
 
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */
@@ -339,6 +343,56 @@ static void switch_to_ap(void)
     }
 
     start_ap();
+
+    /* PIT-060（2026-10-01 二号机复发 37h 实锤）：带凭据进 AP 兜底 → 武装
+     * 周期 STA 重试，路由器侧恢复收容后 ≤一个间隔自愈，免人工 AT+REBOOT。
+     * 无凭据是首启 provision（配置保存即重启），不重试。 */
+    if (config_get_wifi_ssid()[0]) {
+        xTaskCreate(ap_sta_retry_task, "ap_retry", 3072, NULL, 4, NULL);
+    }
+}
+
+/**
+ * @brief  AP 兜底后的周期 STA 重试（PIT-060：原实现 AP 回退即永久放弃，
+ *         路由器间歇拒收场景把板子钉死热点模式）。
+ *
+ *         每 AP_STA_RETRY_MS 切回 STA 试一轮——AP→STA 逆 switch_to_ap，
+ *         连接全量复用启动路径（STA_START 择优扫描 + connection_monitor
+ *         两段式 DHCP 等待）。成败由 monitor 裁决：成 → 常驻 STA；败 →
+ *         ap_fallback() 回 AP 并重新武装本任务，无限慢速循环。
+ *         不订阅 TWDT（30min 单睡合法，PIT-059 纪律只约束已订阅任务）。
+ *         AP 上有配置客户端时顺延一轮，不打断 provision。
+ */
+static void ap_sta_retry_task(void *arg)
+{
+    int attempt = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(AP_STA_RETRY_MS));
+        if (!s_ap_started) break;               /* 已被其它路径切回 STA */
+        if (!config_get_wifi_ssid()[0]) break;  /* 无凭据：provision 态不重试 */
+        wifi_sta_list_t stas;
+        if (esp_wifi_ap_get_sta_list(&stas) == ESP_OK && stas.num > 0) {
+            ESP_LOGI(TAG, "AP retry postponed: %d station(s) on config portal", stas.num);
+            continue;
+        }
+        ESP_LOGW(TAG, "AP fallback periodic STA retry (attempt %d) — leaving AP mode",
+                 ++attempt);
+        esp_wifi_stop();
+        if (s_netif_ap) {
+            esp_netif_destroy(s_netif_ap);
+            s_netif_ap = NULL;
+        }
+        s_ap_started      = false;
+        s_net_switches    = 0;   /* 本轮重试给满切换预算 */
+        s_sta_retry_count = 0;
+        s_link_flap       = false;
+        start_sta();
+        TaskHandle_t mon = NULL;
+        xTaskCreate(connection_monitor_task, "wifi_mon", 2048, NULL, 5, &mon);
+        (void)mon;
+        break;   /* 交付 monitor：成→STA 常驻；败→ap_fallback 重新武装 */
+    }
+    vTaskDelete(NULL);
 }
 
 /** AP 兜底闸门（契约 §3.1 allow_ap_fallback，NVS 键 ap_fallback，默认 1
