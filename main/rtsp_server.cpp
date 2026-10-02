@@ -73,7 +73,9 @@ extern "C" void rtsp_video_feed_task(void *arg)
 
     /* Try to send the most recent frame immediately */
     frame_msg_t msg;
+    uint32_t last_seq = 0;
     if (frame_broadcaster_get_frame(vsub, &msg)) {
+        last_seq = msg.seq;
         s_server->send_frame(0, std::span<const uint8_t>(msg.data, msg.len));
         frame_broadcaster_release(&msg);
     }
@@ -81,8 +83,18 @@ extern "C" void rtsp_video_feed_task(void *arg)
     while (s_running) {
         frame_msg_t msg;
         if (frame_broadcaster_get_frame(vsub, &msg)) {
-            s_server->send_frame(0, std::span<const uint8_t>(msg.data, msg.len));
+            /* 只发新帧（seq 前进才发）：get_frame 无条件返回缓存帧，而背压
+             * 窗口内 send_frame 快速返回（session 侧丢弃+冷却），成功路径
+             * 若无节流会退化成 p2 热自旋，饿死同核低优先级任务（TWDT 首捕：
+             * chan_health 停喂 10s，2026-10-03 二号机；PIT-057 同族）。
+             * 正常流上限仍 ≥ 帧率（帧周期 61ms >> 10ms 让步）。 */
+            bool is_new = (msg.seq != last_seq);
+            last_seq = msg.seq;
+            if (is_new) {
+                s_server->send_frame(0, std::span<const uint8_t>(msg.data, msg.len));
+            }
             frame_broadcaster_release(&msg);
+            vTaskDelay(pdMS_TO_TICKS(10));
         } else {
             /* No frame available yet — yield briefly before retry */
             vTaskDelay(pdMS_TO_TICKS(10));
