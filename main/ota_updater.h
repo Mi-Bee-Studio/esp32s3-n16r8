@@ -30,6 +30,14 @@
 esp_err_t ota_updater_init(void);
 
 /**
+ * @brief True while an OTA long transaction is inside its grace window
+ *        (PIT-058): the main-loop httpd :80 self-heal probe must skip
+ *        counting while this returns true. Deadline-based and
+ *        self-expiring — no handler exit path can leave it stuck on.
+ */
+bool ota_updater_busy(void);
+
+/**
  * @brief HTTP handler for POST /api/ota — parses {"url":"..."}, performs update.
  */
 esp_err_t api_ota_handler(httpd_req_t *req);

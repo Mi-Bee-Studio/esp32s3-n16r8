@@ -64,9 +64,58 @@ static const char *TAG = "main";
  * 旧实现把它计为"httpd 死"→ 2/2 → esp_restart —— 资源紧张被翻译成重启，
  * 实测 2-7 分钟循环（rst:0xc，无 panic）。修复：资源类失败一律不计数
  * （池子 15s MSL 后自行恢复）；只有"TCP 连上但应用层无响应"才判疑似卡死。 */
-static bool probe_httpd_port80(void)
+/* 探针失败时的占用者转储（ai#31 家族推广，2026-10-03）：socket 表被静默
+ * 存量会话卡满时（PIT-052 型），探针只报"不响应"——谁占着不可见，只能等
+ * 自愈重启。逐 fd 打对端 + mjpeg 客户端数/RSSI/内部堆，一次定位卡表占用
+ * 者。getpeername 双栈陷阱（IPv4 对端以 v4-mapped 返回）同 web_server_static.c
+ * 的 PIT-056 注释：sockaddr_storage 判族。 */
+static void log_socket_holders(void)
 {
-    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    httpd_handle_t h = web_server_get_handle();
+    if (!h) {
+        ESP_LOGW(TAG, "diag: httpd handle NULL");
+        return;
+    }
+    int fds[16];
+    size_t count = sizeof(fds) / sizeof(fds[0]);
+    if (httpd_get_client_list(h, &count, fds) != ESP_OK) {
+        ESP_LOGW(TAG, "diag: httpd_get_client_list failed");
+        return;
+    }
+    ESP_LOGW(TAG, "diag: httpd sessions=%u mjpeg_clients=%d rssi=%d int_free=%u",
+             (unsigned)count, mjpeg_stream_client_count(),
+             wifi_manager_get_rssi(),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    for (size_t i = 0; i < count; i++) {
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof(ss);
+        char peer[INET6_ADDRSTRLEN] = "?";
+        int port = 0;
+        if (lwip_getpeername(fds[i], (struct sockaddr *)&ss, &sl) == 0) {
+            const void *addr = NULL;
+            int fam = ss.ss_family;
+            if (fam == AF_INET) {
+                addr = &((struct sockaddr_in *)&ss)->sin_addr;
+                port = ntohs(((struct sockaddr_in *)&ss)->sin_port);
+            } else if (fam == AF_INET6) {
+                addr = &((struct sockaddr_in6 *)&ss)->sin6_addr;
+                port = ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+            }
+            char abuf[INET6_ADDRSTRLEN];
+            if (addr && inet_ntop(fam, addr, abuf, sizeof(abuf)) != NULL) {
+                const char *p = abuf;
+                if (strncasecmp(p, "::ffff:", 7) == 0) {
+                    p += 7;   /* IPv4-mapped → 报 IPv4 文本 */
+                }
+                strlcpy(peer, p, sizeof(peer));
+            }
+        }
+        ESP_LOGW(TAG, "diag: fd=%d peer=%s:%d", fds[i], peer, port);
+    }
+}
+
+static bool probe_httpd_port80(void)
+{    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) {
         ESP_LOGW(TAG, "httpd probe: no socket available (errno=%d) — not counted", errno);
         return true;
@@ -333,15 +382,23 @@ void app_main(void)
 
         /* httpd :80 self-heal: probe every 60s cycle.
          * 2 consecutive failures (120s unresponsive) → reboot.
-         * WiFi 未连接时不计数（ai-thinker 2026-09-03 同款：掉线≠httpd 死）。 */
+         * WiFi 未连接时不计数（ai-thinker 2026-09-03 同款：掉线≠httpd 死）。
+         * OTA 长事务窗口内整体跳过（PIT-058：esp_ota_write 拖慢事件循环
+         * 属预期，2026-10-02 .113 两连杀后结构性修复；窗口 10min 封顶自动失效）。 */
         static int httpd_stuck_count = 0;
-        if (!probe_httpd_port80()) {
+        if (ota_updater_busy()) {
+            ESP_LOGD(TAG, "httpd probe skipped: OTA transaction grace window");
+        } else if (!probe_httpd_port80()) {
             if (!wifi_manager_is_connected()) {
                 httpd_stuck_count = 0;
                 ESP_LOGW(TAG, "httpd probe failed but WiFi down — not counting");
             } else {
                 httpd_stuck_count++;
                 ESP_LOGW(TAG, "httpd :80 probe failed (%d/2)", httpd_stuck_count);
+                if (httpd_stuck_count == 1) {
+                    /* ai#31 推广：趁还没重启，把卡表占用者打出来 */
+                    log_socket_holders();
+                }
                 if (httpd_stuck_count >= 2) {
                     ESP_LOGE(TAG, "httpd :80 unresponsive for 120s — rebooting");
                     esp_restart();

@@ -31,6 +31,26 @@ static const char *TAG = "ota_updater";
 
 static SemaphoreHandle_t s_ota_mutex = NULL;
 
+/* PIT-058 结构性修复（2026-10-02 .113 两连杀实证：重传即过不再成立）：
+ * OTA 长事务（4MB 流式上传 / esp_https_ota 拉取 / SPIFFS 全擦写）可持续
+ * 数分钟，期间 esp_ota_write 拖慢 httpd 事件循环属预期——main 的 :80
+ * 自愈探针必须跳过计数，否则自愈变误杀。用截止时刻而非清零旗标：任何
+ * handler 退出路径都不可能漏清，窗口过期自动恢复计数（漏清旗标会让
+ * 自愈永久失效，比 PIT-058 本身更糟）。 */
+#define OTA_TXN_GRACE_S 600
+static TickType_t s_txn_grace_until = 0;
+
+static void ota_txn_grace_begin(void)
+{
+    s_txn_grace_until = xTaskGetTickCount() + pdMS_TO_TICKS(OTA_TXN_GRACE_S * 1000);
+    ESP_LOGI(TAG, "httpd self-heal probe grace window opened (%ds)", OTA_TXN_GRACE_S);
+}
+
+bool ota_updater_busy(void)
+{
+    return s_txn_grace_until != 0 && xTaskGetTickCount() < s_txn_grace_until;
+}
+
 
 #define OTA_BUF_SIZE 4096
 
@@ -107,6 +127,7 @@ esp_err_t api_ota_handler(httpd_req_t *req)
     cJSON_Delete(json);
 
     /* Run the OTA update */
+    ota_txn_grace_begin();   /* esp_https_ota 可持续数分钟（PIT-058） */
     esp_err_t ota_ret = ota_do_update(url);
     xSemaphoreGive(s_ota_mutex);
 
@@ -188,6 +209,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req)
     }
 
     ESP_LOGI(TAG, "OTA upload: %d bytes to partition '%s'", content_len, update_part->label);
+    ota_txn_grace_begin();   /* 流式上传 + esp_ota_begin 全擦可持续数分钟（PIT-058） */
     ota_quiesce_system();
 
     esp_ota_handle_t update_handle = 0;
@@ -276,6 +298,7 @@ esp_err_t api_ota_spiffs_handler(httpd_req_t *req)
     }
 
     ESP_LOGI(TAG, "SPIFFS OTA: %d bytes to partition '%s'", content_len, spiffs_part->label);
+    ota_txn_grace_begin();   /* 全分区擦除+逐块写入（PIT-058） */
     ota_quiesce_system();
 
     /* 全擦除 SPIFFS 分区 */
