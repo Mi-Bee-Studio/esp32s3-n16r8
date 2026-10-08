@@ -68,6 +68,9 @@ esp_err_t api_status_handler(httpd_req_t *req)
      * wifi_rssi/wifi_channel（三姐妹板均已下发，本板此前缺失 → 无信号显示） */
     cJSON_AddNumberToObject(data, "wifi_rssi", wifi_manager_get_rssi());
     cJSON_AddNumberToObject(data, "wifi_channel", wifi_manager_get_channel());
+    /* 2026-10-08 增补（加性字段，消费者可忽略）：连接兼容性阶梯档位 */
+    cJSON_AddStringToObject(data, "wifi_compat_profile",
+        wifi_manager_compat_profile());
 
     /* Camera — 传感器型号 + 当前分辨率（细节在 /api/camera） */
     cJSON_AddStringToObject(data, "camera", camera_sensor_name());

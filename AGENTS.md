@@ -667,3 +667,71 @@ build/spiffs.bin，含本移植与四仓 SPA 同步版）。
   （用户侧动作），勿当固件回归排查。判别基准：`.119` 同窗 ping 正常。
 - 采集器（`overnight_log.py /dev/ttyUSB0`）本日重启过一次——旧进程自 09-13 楔死
   （USB 重枚举盲区已知坑），日志断档 4 天属正常现象。
+
+## 2026-10-08：STA 连接兼容性阶梯（p0-p4）+ netif 生命周期重构
+
+**需求源头**：台面 N16R8（MAC be:5c，实载 OV5640）被主路由 2.4G 拒收——用户指令"不让路由适配主板，让主板兼容能力更广泛更强"。
+
+### 连接兼容性阶梯（wifi_manager.c）
+
+五档、逐级降级、整轮失败才升档（升档=换姿势把两网重试一轮，不是每断连就换）：
+
+| 档 | 射频/关联参数 | 靶向 |
+|---|---|---|
+| p0-default | bgn / 带宽跟随协商 / 无 802.11k v（=历史行为，零回归） | 基线 |
+| p1-steer | +802.11k(rrm)/v(btm)/MBO + 全信道扫描 + failure_retry_cnt=3 硬敲门 | "AI 漫游引导"型路由（assoc 成功即 ASSOC_LEAVE 踢人的典型对策） |
+| p2-ht20 | bgn + 强制 HT20 | HT40 协商完不成/邻道干扰环境 |
+| p3-legacy | 纯 11b/g + HT20 | 关联 IE 不带 11n HT，最大兼容面 |
+| p4-randmac | p3 射频 + 每 SSID 稳定派生本地管理 STA MAC（FNV-1a(base_mac+ssid)，同网重启不变） | 路由器按 MAC 黑名单/防攻击抑制（换身份敲最后一次门） |
+
+- 升档三入口共用 `sta_ladder_escalate()`（断线重试上限/切换上限/监视器超时），`s_sta_profile` 单调递增防越级；耗尽才 AP 兜底，兜底被禁则停最底档轮换。
+- **活动宽限（PASS_GRACE_MS=120s）**：监视器在"距最近连接请求 <120s"时只观望不做兜底决策——否则旧窗口会把刚升档的新一轮 2s 内兜底掉（台面实测 p0→p1 升档即被旧窗口掐死）。p1+ 一整轮可达 90s+（全信道扫描+3 次重试）。
+- p4 档 STA_START 跳过双网重选扫描（MAC 按升档时的网络派生，重选会造出 MAC↔网络错配）；30min 周期重试（PIT-060）从头走阶梯。
+- `/api/status` 加性字段 `wifi_compat_profile`（消费者可忽略）。
+
+### 台面实测结论（2026-10-08，两网真实 SSID 已脱敏=主网 AP/主路由）
+
+- 五档**全部被拒**（p4 换新 MAC 同样拒）→ 该路由器 2.4G 此刻拒**一切新关联**（客户端数上限/白名单/射频卡死类），非客户端参数可解；PC 同密码 5G 可连佐证密码与 SSID 配置无误。等路由器侧状态变化，30min 重试自动收容。
+- 备用网（主路由）台面扫描只见 5GHz BSSID（已脱敏）——S3 永远连不上，双网择优里它是摆设（部署位可能有 2.4G，换备用网前先扫；后文深夜续有更正：2.4G 存在但广播 WPA3-SAE）。
+- 阶梯机制本身全程验证：五档逐级应用（p3 proto=0x3 ✓、p4 MAC ✓）、宽限防抢跑 ✓、耗尽文案 ✓、干净落 AP ✓。
+
+### netif 生命周期重构（存量崩溃根除，PIT 级）
+
+- **根因**：esp_wifi_stop() 的 `WIFI_EVENT_STA_STOP` 默认 action（esp_netif_action_stop）还排在事件循环队列里，旧的"切换即 destroy STA netif"让 action 落到已释放对象 → lwip `netif_ip6_addr_set: invalid netif` assert 间歇性重启。**test-69 起就存在**（backtrace 落 esp_wifi_register_if_rxcb 邻域，15:32 台面复现实锤），此前"AP 兜底后莫名重启"多属此。
+- **修复**：双 netif（STA+AP）在 wifi_manager_init 一次性创建、永不销毁；AP 静态 IP 在 init 配好（set_ip 撞 DHCP_NOT_STOPPED→stop 重试；末尾 dhcps_start 在 netif 未 up 时=状态归位 INIT，恰好重新武装 AP_START 默认 action 的自动拉起）；AP↔STA 只 stop/set_mode/start。esp-idf 官方 AP/STA 例程同款姿势。
+- ⚠ init 时对默认 AP netif 直接 `ESP_ERROR_CHECK(esp_netif_set_ip_info)` 会因 DHCP 已在跑而 abort 开机循环——必须走上面的免疫式序列。
+- 重构过程中曾加的 100ms 驱动静默 delay 已随本重构删除（netif 不销毁后无必要）；switch_to_ap 后落到的裸 `esp_wifi_connect()` 已加 `s_ap_started` 守卫（falls-through 曾撞已拆 netif）。
+
+### 家族推广 TODO
+
+阶梯（sta_ladder_escalate + 五档 + 宽限）与 netif 重构需按"同构→拷贝改"推广至 seeed-esp32s3-cam / ai-thinker-esp32-cam / luatos-esp32s3-a10-camera；推广时 wifi_manager 各板已有分叉（ap_sta_retry 只有部分仓有），逐仓适配勿盲拷。
+
+### 2026-10-08 深夜续：隔离测试定性（本台单元硬件嫌疑）+ p5-wpa2
+
+- **拓扑更正（用户提供）**：备用网=主路由（GT-3000 型号），主网=级联的另一台
+  TP-Link AP——两台独立设备（真实 SSID 已脱敏）。NVS 备用网密码（已脱敏）经 PC WPA3(H2E) 验证有效。
+- **主路由 2.4G（BSSID 已脱敏）广播 WPA3-SAE**，与相机 SAE 交互失败（auth 全
+  超时）→ 阶梯加 **p5-wpa2**：pmf capable=false（协议上放弃 SAE）+ threshold=WPA2_PSK，
+  过渡模式 BSS 直接走 WPA2。实测主路由仍不收（其 2.4G 疑似 SAE-only）。
+- **用户关键事实**：ai-thinker / seeed / 另一台 N16R8 在同路由上全部正常——"路由器拒一切"
+  结论作废，问题锁定本台单元特有。
+- **隔离测试（PC Windows 移动热点 MiBeeTest，2.4G，1m 距离）**：关联后 4-way 握手超时
+  （reason=15/201），**全新热点、首次见面、无黑名单可能** → 失败与路由器无关。
+- **NVS 全清重测**（见下节事故说明，NVS 被整片擦除）：全新 NVS + 全新 RF 校准 → 仍连不上
+  任何 AP。软件变量至此穷尽：凭据（PC 双网验证）、NVS 状态、RF 校准、MAC（随机化）、
+  协议参数（六档）、固件版本（9-24 旧版与当日新版）、四台不同 AP。
+- **定性**：本台单元 STA 射频路径在"关联后的握手/数据交换"层失败（mgmt 帧能通、扫描
+  正常、自家 AP 模式正常），指向**硬件**（射频前端/晶振/USB 供电 sag 嫌疑）。建议：
+  换 USB 线/直插主板口复测（供电 sag 一分钟排除）→ 查天线座 → 仍不行则按硬件处置。
+  该单元 9 月中旬曾在线推流正常，属渐进劣化。
+- **运维状态变更**：NVS 被擦后两网 WiFi 凭据已回填（真实密码已脱敏，记录在本地
+  安全处）；**web_password 回到默认 mibeecam2026**（原为用户个人口令，已脱敏，联网后 POST /api/config 可改回）；
+  flash_viewers 开关被重置（默认关，联网后重新打开）。
+
+### 2026-10-08 事故记录：esptool v5 erase_region 参数语义（PIT 级）
+
+`esptool v5 erase_region <offset> <size>` 是**偏移+长度**（不是老版的起止地址）。
+本次 `erase_region 0x9000 0xf000` 实擦 0x9000..0x78000，把 ota_0 镜像前 416KB 一并擦掉，
+板子进 "No bootable app partitions" 启动循环。恢复：全量重刷（bootloader+分区表+app+
+otadata+spiffs，serialtap flash 一次过）。教训：**v5 对 region 类命令优先怀疑参数语义**，
+擦分区前先 `serialtap partitions` 核对偏移，或用 serialtap 分区感知命令替代裸 esptool。
