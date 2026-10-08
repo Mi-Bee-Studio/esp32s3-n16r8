@@ -67,7 +67,7 @@ static bool s_link_flap = false;          /* 连接存活 <60s：切换预算不
  *   p5 wpa2     p3 射频 + PMF capable=false（协议上放弃 SAE）+
  *               threshold=WPA2_PSK——WPA3/SAE 交互谈不崩的过渡模式
  *               （WPA2/WPA3 双套件）BSS 直接走 WPA2 进门（台面
- *               GT3000 2.4G=WPA3-SAE 广播、auth 全超时的对策）。
+ *               主路由 2.4G=WPA3-SAE 广播、auth 全超时的对策）。
  */
 #define STA_PROFILE_DEFAULT 0
 #define STA_PROFILE_STEER   1
