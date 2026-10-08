@@ -705,3 +705,33 @@ build/spiffs.bin，含本移植与四仓 SPA 同步版）。
 ### 家族推广 TODO
 
 阶梯（sta_ladder_escalate + 五档 + 宽限）与 netif 重构需按"同构→拷贝改"推广至 seeed-esp32s3-cam / ai-thinker-esp32-cam / luatos-esp32s3-a10-camera；推广时 wifi_manager 各板已有分叉（ap_sta_retry 只有部分仓有），逐仓适配勿盲拷。
+
+### 2026-10-08 深夜续：隔离测试定性（本台单元硬件嫌疑）+ p5-wpa2
+
+- **拓扑更正（用户提供）**：MickeyBeeGT3000=主路由（GT-3000 型号），MickeyBeeGT=级联的
+  另一台 TP-Link AP——两台独立设备。NVS 备用网密码 2013-01-04 经 PC WPA3(H2E) 验证有效。
+- **GT3000 2.4G（BSSID ea:00:f1:25:37:0d）广播 WPA3-SAE**，与相机 SAE 交互失败（auth 全
+  超时）→ 阶梯加 **p5-wpa2**：pmf capable=false（协议上放弃 SAE）+ threshold=WPA2_PSK，
+  过渡模式 BSS 直接走 WPA2。实测 GT3000 仍不收（其 2.4G 疑似 SAE-only）。
+- **用户关键事实**：ai-thinker / seeed / 另一台 N16R8 在同路由上全部正常——"路由器拒一切"
+  结论作废，问题锁定本台单元特有。
+- **隔离测试（PC Windows 移动热点 MiBeeTest，2.4G，1m 距离）**：关联后 4-way 握手超时
+  （reason=15/201），**全新热点、首次见面、无黑名单可能** → 失败与路由器无关。
+- **NVS 全清重测**（见下节事故说明，NVS 被整片擦除）：全新 NVS + 全新 RF 校准 → 仍连不上
+  任何 AP。软件变量至此穷尽：凭据（PC 双网验证）、NVS 状态、RF 校准、MAC（随机化）、
+  协议参数（六档）、固件版本（9-24 旧版与当日新版）、四台不同 AP。
+- **定性**：本台单元 STA 射频路径在"关联后的握手/数据交换"层失败（mgmt 帧能通、扫描
+  正常、自家 AP 模式正常），指向**硬件**（射频前端/晶振/USB 供电 sag 嫌疑）。建议：
+  换 USB 线/直插主板口复测（供电 sag 一分钟排除）→ 查天线座 → 仍不行则按硬件处置。
+  该单元 9 月中旬曾在线推流正常，属渐进劣化。
+- **运维状态变更**：NVS 被擦后已还原 wifi GT/2022-02-22 + GT3000/2013-01-04；
+  **web_password 回到默认 mibeecam2026**（原 2022-02-22，联网后 POST /api/config 可改回）；
+  flash_viewers 开关被重置（默认关，联网后重新打开）。
+
+### 2026-10-08 事故记录：esptool v5 erase_region 参数语义（PIT 级）
+
+`esptool v5 erase_region <offset> <size>` 是**偏移+长度**（不是老版的起止地址）。
+本次 `erase_region 0x9000 0xf000` 实擦 0x9000..0x78000，把 ota_0 镜像前 416KB 一并擦掉，
+板子进 "No bootable app partitions" 启动循环。恢复：全量重刷（bootloader+分区表+app+
+otadata+spiffs，serialtap flash 一次过）。教训：**v5 对 region 类命令优先怀疑参数语义**，
+擦分区前先 `serialtap partitions` 核对偏移，或用 serialtap 分区感知命令替代裸 esptool。
