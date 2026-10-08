@@ -1,0 +1,15 @@
+version: "0.1.0"
+targets:
+  - esp32s3
+dependencies:
+  idf:
+    version: ">=5.0"
+  # esp32-camera 与 cam/ 子项目同款（IDF v6.0.1 上板验证过的 2.1.6+）
+  espressif/esp32-camera:
+    version: "^2.1.6"
+    rules:
+      - if: "target in [esp32s3]"
+  # UVC 设备类（TinyUSB 封装 + Kconfig，依赖 espressif/tinyusb 自动带入）
+  espressif/usb_device_uvc:
+    version: "1.*"
+  cmake_utilities: "*"

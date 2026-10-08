@@ -1,0 +1,6 @@
+# Name,   Type, SubType, Offset,  Size,     Flags
+# nvs/phy_init 偏移与 cam/ 子项目一致：覆盖刷本固件不动 cam 的 NVS 配置，
+# 两固件可互换重刷。factory 4MB（无 OTA 槽，见 README 已知缺口）。
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  0,    0,       0x10000, 0x400000,
