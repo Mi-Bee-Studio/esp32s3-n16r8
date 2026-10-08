@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+menu "MiBee USB Webcam Configuration"
+
+    choice CAMERA_MODULE
+        prompt "Camera module pin map"
+        default CAMERA_MODULE_GOOUUU_N16R8
+        help
+            本项目只服务 GOOUUU ESP32-S3-N16R8 相机板（引脚表与 cam/ 子项目
+            sdkconfig.defaults 同源）。换板时在 camera_pin.h 加块 + 这里加选项。
+
+        config CAMERA_MODULE_GOOUUU_N16R8
+            bool "GOOUUU ESP32-S3-N16R8 (OV5640/OV3660)"
+    endchoice
+
+    choice CAMERA_XCLK_FREQ_CHOICE
+        prompt "Camera XCLK frequency (MHz)"
+        default CAMERA_XCLK_16M
+        help
+            16MHz：cam 仓上板结论（XGA+ 稳定的必要条件）；20MHz 为 esp32-camera
+            传统默认。VGA 两者皆可，选 16 与 cam 固件一致。
+
+        config CAMERA_XCLK_10M
+            bool "10 MHz"
+        config CAMERA_XCLK_16M
+            bool "16 MHz"
+        config CAMERA_XCLK_20M
+            bool "20 MHz"
+    endchoice
+
+    config CAMERA_XCLK_FREQ
+        int
+        default 10 if CAMERA_XCLK_10M
+        default 16 if CAMERA_XCLK_16M
+        default 20 if CAMERA_XCLK_20M
+
+    config CAMERA_VFLIP
+        bool "Vertical flip"
+        default n
+        help
+            传感器垂直翻转（安装倒装时开）。
+
+    config CAMERA_HMIRROR
+        bool "Horizontal mirror"
+        default n
+
+endmenu

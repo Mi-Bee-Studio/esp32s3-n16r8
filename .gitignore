@@ -1,126 +1,22 @@
-# MiBee Cam family .gitignore (byte-identical across the four cam repos)
+# esp32s3-n16r8 主板仓根 .gitignore（子项目各有构建产物，用递归模式）
+# cam/ 子项目内部另有一份家族契约 .gitignore（cam/.gitignore，四仓字节一致）。
 
-# Build artifacts
+# ESP-IDF 构建产物与本地配置（任意深度的子项目）
 build/
-build2/
-build3/
-out/
-output/
-dist/
-partition_table/
-bootloader/build/
-
-# ESP-IDF generated config (sdkconfig.defaults stays tracked; local sdkconfig
-# is the injection point for local-only credentials — never commit it)
 sdkconfig
 sdkconfig.old
 managed_components/
 dependencies.lock
 
-# Binary / object artifacts
-*.o
-*.obj
-*.a
-*.so
-*.d
-*.elf
-*.bin
-*.hex
-*.map
-*.lst
-
-# Editor / IDE / index
+# IDE / AI 工具状态
 .vscode/
 .idea/
-*.iml
-*.user
 .clangd/
-.ccls-cache/
 compile_commands.json
-.trae/
-codegraph/
-.codegraph/
-
-# AI IDE / agent tool state (never commit; .zcode once slipped in — PIT-047)
 .zcode/
 .claude/
 .cursor/
-.cursorrules
-.continue/
-.aider*
-.windsurf/
-.kiro/
-.zed/
-.copilot*
-.gemini/
-.goose/
-.roo/
-.clinerules
-CLAUDE.md
-GEMINI.md
 
-# Internal tool caches
-.sisyphus/
-.omo/
-.cache/
-setup_idf_env.ps1
-package-lock.json
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-.Python
-env/
-venv/
-.venv/
-ENV/
-env.bak/
-venv.bak/
-.pytest_cache/
-.coverage
-htmlcov/
-*.gcda
-*.gcno
-*.gcov
-
-# Logs and local runtime artifacts (serial collectors etc.)
-*.log
-*.out
-*.tmp
-*.temp
-tools/overnight_serial.log
-tools/overnight_reboots.log
-
-# OS generated files
+# OS
 .DS_Store
 Thumbs.db
-Desktop.ini
-*.lnk
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-*~
-*.swp
-*.swo
-*.bak
-*#
-
-# Local-only content
-/*-test.png
-/*-check.png
-tmp/
-docs/superpowers/
-docs/stream-push-analysis/
-.github/copilot-instructions.md
-config.txt
-verify_hardware.bat
-build_log.txt
-.playwright-mcp/
-$null
-
-# SPA gzip build inputs (PIT-038, tools/compress_ui.py)
-main/web_ui/*.gz

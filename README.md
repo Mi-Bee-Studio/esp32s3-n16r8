@@ -1,136 +1,61 @@
-# MiBee Cam
+# ESP32-S3-N16R8 相机板（GOOUUU）
 
-ESP32-S3-N16R8 + OV3660 camera firmware with MJPEG streaming, AI detection, RTSP, ONVIF, and responsive web UI.
-
-## Hardware
-
-- **Module**: ESP32-S3-WROOM-1 **N16R8** (16 MB Quad Flash, 8 MB Octal PSRAM)
-- **Camera**: **OV3660** (3 MP, 1/5" sensor, max QXGA 2048×1536)
-- **USB**: USB-Serial/JTAG (enumerates as `/dev/ttyACM0`)
-
-### Board Overview
-
-| Item | Value |
-|------|-------|
-| Board | GOOUUU ESP32-S3-CAM N16R8 carrier (pin map below is the GOOUUU wiring — other N16R8 boards may differ) |
-| Module | ESP32-S3-WROOM-1 **N16R8** — Xtensa LX7 dual-core @ 240 MHz |
-| Flash | 16 MB Quad SPI |
-| PSRAM | 8 MB **Octal** (`SPIRAM_MODE_OCT` — NOT Quad; frame buffers live here, `fb_count=2`) |
-| Wireless | 2.4 GHz WiFi b/g/n + BLE 5 |
-| USB | USB Type-C — USB-Serial/JTAG (console + flashing, no bridge chip) |
-| Camera | OV3660, sensor PID `0x77`, JPEG output |
-| Partitions | Dual OTA slots in the 16 MB flash |
-
-### Pinout Diagram (USB-C pointing up, front/component-side view; GOOUUU board)
+> 主板仓（board-as-root）：本 README 只写板子；每个项目一个子目录，独立可编译。
+> 2026-10-08 由 `esp32s3-n16r8-cam` 仓改造而来（GitHub/Gitea 仓已同步改名，旧地址自动重定向）。
 
 ```
-                 ┌─ USB-C ─┐
-   Camera (DVP) → │ ESP32-S3 │ ← TF / module antenna area
-                 │  WROOM-1 │
-                 │  N16R8   │
-                 └──────────┘
-  Camera (SCCB) → SIOD=IO4 · SIOC=IO5          XCLK=IO15
-  Camera bus    → D0=IO11 · D1=IO9 · D2=IO8 · D3=IO10 · D4=IO12
-                  D5=IO18 · D6=IO17 · D7=IO16
-  Camera timing → VSYNC=IO6 · HREF=IO7 · PCLK=IO13
-  PWDN/RESET    → not connected (-1)
+esp32s3-n16r8/
+├── README.md        # 本文件：板子硬件事实
+├── cam/             # MiBee Cam 网络相机固件（原仓整体迁入，自带 AGENTS.md）
+└── usb-webcam/      # USB 摄像头固件（UVC，插 PC 即普通 webcam）
 ```
 
-Full pin map, PSRAM constraints and the partition plan: [docs/hardware.md](docs/hardware.md).
+- 每个子项目自带完整构建三件套（CMakeLists.txt / main/ / sdkconfig.defaults）：`cd <项目> && idf.py build`。
+- 项目间不共享代码，共性先拷贝（主板为根规范）。
+- **在 cam/ 里工作时以其内部 AGENTS.md 为准**（任务布局、引脚、坑、家族契约）。
 
-## Firmware Baseline Norms
+## Board Overview
 
-Two baselines are mandatory fleet-wide for every MiBee firmware repo:
+| Item | Value | Notes |
+|------|-------|-------|
+| 板卡 | GOOUUU ESP32-S3-N16R8 相机板 | 厂商由引脚表推断（cam/AGENTS.md） |
+| 模组 | ESP32-S3-WROOM-1 **N16R8** | 16 MB Quad Flash · 8 MB **Octal** PSRAM |
+| SoC | ESP32-S3 (Xtensa LX7 双核 @ 240 MHz) | USB-OTG（GPIO19/20）+ USB-Serial/JTAG 双外设 |
+| 摄像头 | **OV5640 实载**（设计兼容 OV3660） | 传感器由驱动自适应识别；DVP 并口 |
+| USB ×2 | ① 原生 USB 口（GPIO19/20，JTAG/OTG）② CH343 USB-UART（UART0 控制台/烧录） | 两口同时可用：UVC 走原生口、日志走 CH343 |
+| Flash LED | GPIO 2 / 3 / 46（开机探测） | cam 固件暴露 `/api/led` |
+| SD / 麦克风 | 无 | 硬件豁免项 |
+| 已知硬件问题 | 本台台面单元（MAC `80:b5:4e:c2:be:5c`）**WiFi 射频路径疑似损坏**（2026-10-08 隔离测试定性，见 cam/AGENTS.md）——USB/摄像头/串口均正常 | 该单元改派 USB 摄像头用途（usb-webcam/） |
 
-1. **Watchdog: mandatory.** ✅ This firmware: ESP-IDF task watchdog (TWDT 10 s,
-   panic on timeout) with named per-task registration (`watchdog_register_current`)
-   and periodic feeding (`watchdog_feed_current`).
-2. **Web/API firmware upgrade (OTA): mandatory where the hardware allows.**
-   ✅ This firmware: dual OTA slots + the `/api/ota` family
-   (`/api/ota/upload`, `/api/ota/info`, `/api/ota/spiffs`) plus `esp_https_ota`
-   pull-style updates; wired flashing (serialtap/esptool) remains the recovery
-   path, not a substitute.
+## Pinout Diagram（功能引脚图，USB 口朝上/元件面视角）
 
-## Features
-
-- 📷 **MJPEG streaming** — real-time video via HTTP
-- 🤖 **AI detection** — face, motion, QR code with live web overlay
-- 📡 **RTSP server** — MJPEG-only streaming with digest auth
-- 🔍 **ONVIF discovery** — network camera discovery protocol
-- 💡 **Web UI** — zh/en i18n, light/dark theme, full settings control
-- ⌨️ **AT commands** — serial configuration interface
-- 🚦 **OTA-ready** — dual OTA partition layout
-
-## Quick Start
-
-```bash
-# Install ESP-IDF v6.0.1
-git clone --recursive https://github.com/espressif/esp-idf.git ~/.espressif/esp-idf
-cd ~/.espressif/esp-idf
-git checkout v6.0.1
-git submodule update --init --recursive
-./install.sh esp32s3
-
-# Activate ESP-IDF (every new shell)
-source ~/.espressif/esp-idf/export.sh
-
-# Clone and build
-git clone https://github.com/Mi-Bee-Studio/esp32s3-n16r8-cam.git
-cd esp32s3-n16r8-cam
-idf.py set-target esp32s3
-idf.py build
-
-# Flash
-idf.py -p /dev/ttyACM0 flash monitor
-
-# Open http://<device-ip>/ in a browser
+```
+        ┌────────────────────────┐
+        │   [原生 USB]   [CH343  │   ① 原生 USB：GPIO19(D-)/GPIO20(D+)
+        │    GPIO19/20    USB]   │      UVC 固件走此口；亦作 USB-JTAG 烧录
+        │                        │   ② CH343 USB-UART → UART0：AT 控制台 + 烧录
+        │   ESP32-S3-WROOM-1     │      （cam 与 usb-webcam 的日志都从这里出）
+        │      N16R8             │
+        │                        │      摄像头连接器（DVP，实测引脚表）：
+        │   [摄像头连接器]        │      XCLK=15  SIOD=4  SIOC=5  PCLK=13
+        │    OV5640/OV3660       │      D0=11 D1=9  D2=8  D3=10
+        │                        │      D4=12 D5=18 D6=17 D7=16
+        │   Flash LED: 2/3/46    │      VSYNC=6 HREF=7  PWDN/RESET=NC
+        └────────────────────────┘
 ```
 
-## Documentation
+> 引脚出处：cam 固件 `cam/sdkconfig.defaults`（上板验证过）；物理板边排布未在仓内文档化，此处画功能引脚图不臆造物理位置。
 
-- [Architecture](docs/architecture.md) — module map, boot sequence, data flow
-- [Hardware](docs/hardware.md) — pin map, PSRAM constraints, partition plan
-- [Web API](docs/web-api.md) — REST endpoint reference
-- [Web UI](docs/web-ui.md) — UI features, i18n, theme, settings
-- [Development](docs/development.md) — build, flash, CI, contributing
+## Projects
 
-### Reviewing the code? Start here
+| Project | 是什么 | 构建工具链 | 看门狗 | Web/API OTA |
+|---------|--------|-----------|--------|-------------|
+| [`cam/`](cam/) | MiBee Cam 网络相机（MJPEG/RTSP/ONVIF/AI 检测/Web UI，家族四仓契约成员） | ESP-IDF **v6.0.1（pin 死）** | ✅ TWDT | ✅ `/api/ota` |
+| [`usb-webcam/`](usb-webcam/) | USB 摄像头（UVC over 原生 USB，插 PC 即普通 webcam，无需驱动） | ESP-IDF v6.0.1（idf ≥5.0 均可） | ✅ TWDT | ❌ 已知缺口（roadmap：见项目 README；本台台面单元 WiFi 已坏，OTA 无通道） |
 
-- `docs/architecture.md` — module map, dependencies, boot sequence, data flow
-- `main/web_server.c` — the complete HTTP surface in one `s_uris[]` route table near the top of the file (reading map in the file header)
-- `docs/api-contract.md` · `docs/config-contract.md` · `docs/at-command.md` — versioned behavior contracts shared across the MiBee Cam family
-- `docs/PITFALLS.md` — the family incident library behind every defensive workaround in this codebase (sanitized public edition)
+固件基线规范（全家桶强制：看门狗必开、硬件允许必须 OTA）——usb-webcam 的 OTA 属已登记缺口，硬件豁免情形见项目 README。
 
-## Project Status
+## Flash / Debug
 
-This is a production-ready firmware with:
-- ✅ Working camera (OV3660)
-- ✅ MJPEG streaming
-- ✅ AI pipeline (face, motion, QR)
-- ✅ Web UI (zh/en, light/dark)
-- ✅ RTSP server
-- ✅ ONVIF discovery
-- ✅ AT command interface
-- ✅ NVS configuration
-- ✅ Dual OTA partitions
-
-## Known Limitations
-
-- AI requires VGA resolution (640×480)
-- RTSP is MJPEG-only (no H.264)
-- WiFi is 2.4 GHz only (no 5 GHz)
-- Web UI requires modern browser (ES6+)
-
-## License
-
-GPL-3.0-or-later
-
-## Contributing
-
-Contributions are welcome! Please see [Development](docs/development.md) for guidelines.
-
-## Support
-
-- Issues: [GitHub Issues](https://github.com/Mi-Bee-Studio/esp32s3-n16r8-cam/issues)
-- Documentation: [docs/](docs/)
-- AGENTS.md: Agent instructions for AI-assisted development
+- 两口都可烧录：CH343（UART0，serialtap 设备名 `ch343`）或原生口（USB-Serial-JTAG，复位即回枚举，与 UVC 固件共存无冲突）。
+- 日志：两项目控制台都走 UART0@115200（CH343 口），serialtap 常驻采集。
