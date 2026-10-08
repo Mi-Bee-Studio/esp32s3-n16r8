@@ -64,15 +64,20 @@ static bool s_link_flap = false;          /* 连接存活 <60s：切换预算不
  *               MAC 做黑名单/防攻击抑制（TP-Link 防攻击保护实测嫌疑），
  *               换身份敲最后一次门。派生含 base MAC+SSID（FNV-1a），
  *               同网重启不变、换网即换身份；默认档位永远用烧录 MAC。
+ *   p5 wpa2     p3 射频 + PMF capable=false（协议上放弃 SAE）+
+ *               threshold=WPA2_PSK——WPA3/SAE 交互谈不崩的过渡模式
+ *               （WPA2/WPA3 双套件）BSS 直接走 WPA2 进门（台面
+ *               GT3000 2.4G=WPA3-SAE 广播、auth 全超时的对策）。
  */
 #define STA_PROFILE_DEFAULT 0
 #define STA_PROFILE_STEER   1
 #define STA_PROFILE_HT20    2
 #define STA_PROFILE_LEGACY  3
 #define STA_PROFILE_RANDMAC 4
-#define STA_PROFILE_COUNT   5
+#define STA_PROFILE_WPA2    5
+#define STA_PROFILE_COUNT   6
 static const char *s_profile_name[STA_PROFILE_COUNT] = {
-    "p0-default", "p1-steer", "p2-ht20", "p3-legacy", "p4-randmac",
+    "p0-default", "p1-steer", "p2-ht20", "p3-legacy", "p4-randmac", "p5-wpa2",
 };
 static int s_sta_profile = STA_PROFILE_DEFAULT;
 static TickType_t s_last_connect_req_tick = 0;  /* 最近一次连接请求时刻 */
@@ -353,6 +358,13 @@ static void sta_apply_and_connect(bool secondary)
     sta_config.sta.pmf_cfg.required   = false;
     sta_config.sta.sae_pwe_h2e        = WPA3_SAE_PWE_BOTH;
     sta_config.sta.listen_interval    = 3;
+    /* 兼容阶梯 p5：关 PMF 能力位 = 协议上放弃 SAE，过渡模式（WPA2/WPA3
+     * 双套件）BSS 会以 WPA2 收下我们；SAE-only 的 BSS 此档进不去（无解，
+     * 属路由器侧仅存 WPA3）。 */
+    if (s_sta_profile >= STA_PROFILE_WPA2) {
+        sta_config.sta.pmf_cfg.capable    = false;
+        sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    }
     /* 兼容阶梯 p1+：应答 802.11k/v 漫游引导（MBO 自动带上 k/v），改全信道
      * 扫描 + 同 BSS 重试 3 次硬敲门——"间歇拒收"型路由多敲几次常就收了
      * （failure_retry_cnt 需 ALL_CHANNEL_SCAN 才生效，见 IDF 头文件）。 */

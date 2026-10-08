@@ -61,8 +61,8 @@ const char *wifi_manager_active_net(void);
 const char *wifi_manager_current_ssid(void);
 
 /* 2026-10-08 连接兼容性阶梯：当前 STA 射频/关联档位名
- * （"p0-default"/"p1-steer"/"p2-ht20"/"p3-legacy"/"p4-randmac"，
- * 整轮失败逐级降级，p4 换每 SSID 派生 MAC） */
+ * （"p0-default"/"p1-steer"/"p2-ht20"/"p3-legacy"/"p4-randmac"/"p5-wpa2"，
+ * 整轮失败逐级降级，p4 换每 SSID 派生 MAC，p5 关 PMF 强制 WPA2） */
 const char *wifi_manager_compat_profile(void);
 
 /* 2026-09-04 API 对齐：三姐妹板的 /api/status 都带 wifi_rssi/wifi_channel
