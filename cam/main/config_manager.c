@@ -58,6 +58,8 @@ KEY_ASSERT("wifi_ssid_2");
 KEY_ASSERT("wifi_pass_2");
 KEY_ASSERT("device_name");
 KEY_ASSERT("timezone");
+KEY_ASSERT("ntp_server1");
+KEY_ASSERT("ntp_server2");
 KEY_ASSERT("ap_fallback");
 KEY_ASSERT("cam_framesize");
 KEY_ASSERT("cam_fps");
@@ -121,6 +123,8 @@ typedef struct {
     bool    flash_viewers;    /* 板级扩展：有观看者（流/拍照）自动开闪光灯，默认 false */
     char    device_name[33];  /* 契约 v1.0: 设备名称 */
     char    timezone[48];     /* 契约 §3.1：POSIX TZ str≤47，空 = UTC */
+    char    ntp_server1[64];  /* 契约 v2.1：SNTP 源 1，空 = 内置公网池 */
+    char    ntp_server2[64];  /* 契约 v2.1：SNTP 源 2，空 = 内置公网池 */
     bool    allow_ap_fallback;/* 契约 §3.1：STA 失败兜底 AP（NVS 键 ap_fallback，
                                  JSON 名 17 字符超 NVS 限，故键名缩短） */
     uint8_t xclk_freq_mhz;    /* 契约 §3.1/§5：∈{10,16,20}，本板默认 16
@@ -159,6 +163,8 @@ static const config_t s_defaults = {
     .cam_vflip       = false,
     .device_name     = "MiBeeCam",
     .timezone        = "",               /* 空 = UTC（契约 §3.1） */
+    .ntp_server1     = "",               /* 空 = 内置公网池（契约 v2.1） */
+    .ntp_server2     = "",               /* 空 = 内置公网池（契约 v2.1） */
     .allow_ap_fallback = true,           /* 契约 §3.1 家族默认 1 = 保留现行为 */
     .xclk_freq_mhz   = 16,               /* 契约 §5 板级覆盖：n16r8 = 16 MHz */
 };
@@ -221,6 +227,8 @@ static const key_entry_t s_keys[] = {
     { "cam_vflip",       TYPE_U8,     OFF_U8(cam_vflip)        },
     { "device_name",     TYPE_STRING, OFF_STR(device_name)     },
     { "timezone",        TYPE_STRING, OFF_STR(timezone)        },
+    { "ntp_server1",     TYPE_STRING, OFF_STR(ntp_server1)     },   /* v2.1 */
+    { "ntp_server2",     TYPE_STRING, OFF_STR(ntp_server2)     },   /* v2.1 */
     { "ap_fallback",     TYPE_U8,     OFF_U8(allow_ap_fallback) },
     { "xclk_freq_mhz",   TYPE_U8,     OFF_U8(xclk_freq_mhz)    },
 };
@@ -566,6 +574,8 @@ bool   config_get_cam_hmirror(void)    { return s_config.cam_hmirror; }
 bool   config_get_cam_vflip(void)      { return s_config.cam_vflip; }
 const char *config_get_device_name(void)  { return s_config.device_name; }
 const char *config_get_timezone(void)     { return s_config.timezone; }
+const char *config_get_ntp_server1(void)  { return s_config.ntp_server1; }
+const char *config_get_ntp_server2(void)  { return s_config.ntp_server2; }
 bool   config_get_allow_ap_fallback(void) { return s_config.allow_ap_fallback; }
 uint8_t config_get_xclk_freq_mhz(void)    { return s_config.xclk_freq_mhz; }
 
@@ -602,6 +612,8 @@ cJSON *config_get_json(void)
     /* Device / locale（契约 §3.1） */
     cJSON_AddStringToObject(root, "device_name", s_config.device_name);
     cJSON_AddStringToObject(root, "timezone", s_config.timezone);
+    cJSON_AddStringToObject(root, "ntp_server1", s_config.ntp_server1);
+    cJSON_AddStringToObject(root, "ntp_server2", s_config.ntp_server2);
     cJSON_AddBoolToObject(root, "allow_ap_fallback", s_config.allow_ap_fallback);
 
     /* AI（JSON 名随契约 §3.2 收敛为 ai_*_en） */

@@ -53,10 +53,22 @@ esp_err_t time_sync_init(void)
 
     esp_sntp_stop();  /* idempotent */
 
+    /* 契约 v2.1：SNTP 源可配（ONVIF SetNTP / POST /api/config）；空键回落
+     * 内置公网池。LAN 隔离部署必须把源指到 NVR/本地 NTP，否则永不收敛——
+     * issue #43 实测 2200s 漂移不自愈的根因。 */
+    const char *s1 = config_get_ntp_server1();
+    const char *s2 = config_get_ntp_server2();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "cn.pool.ntp.org");
-    esp_sntp_setservername(1, "ntp.aliyun.com");
+    if (s1[0]) {
+        esp_sntp_setservername(0, s1);
+        if (s2[0]) esp_sntp_setservername(1, s2);
+    } else {
+        esp_sntp_setservername(0, "cn.pool.ntp.org");
+        esp_sntp_setservername(1, "ntp.aliyun.com");
+    }
     esp_sntp_init();
+    ESP_LOGI(TAG, "SNTP servers: %s%s%s", s1[0] ? s1 : "cn.pool.ntp.org",
+             s2[0] ? " / " : "", s2[0] ? s2 : (s1[0] ? "" : "ntp.aliyun.com"));
 
     ESP_LOGI(TAG, "SNTP started, waiting for sync...");
 
@@ -137,4 +149,17 @@ void time_sync_apply_timezone(const char *tz)
     setenv("TZ", tz, 1);
     tzset();
     ESP_LOGI(TAG, "Timezone set to: %s", tz);
+}
+
+/**
+ * @brief 用最新配置重启 SNTP（issue #43：ONVIF SetNTP / SetSystemDateAndTime
+ *        (NTP) 与 POST /api/config 改 ntp_server* 后调用）。
+ *        与 time_sync_init 的区别：不阻塞等首次同步（SNTP 异步生效，
+ *        time_is_synced 会随后翻转，ONVIF 模式上报跟着变真）。
+ * @return ESP_OK
+ */
+esp_err_t time_sync_restart(void)
+{
+    s_synced = false;
+    return time_sync_init();
 }
