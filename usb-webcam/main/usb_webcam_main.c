@@ -11,11 +11,16 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_psram.h"
 #include "esp_task_wdt.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
@@ -379,6 +384,32 @@ void app_main(void)
     if (probe != ESP_OK) {
         ESP_LOGW(TAG, "boot camera probe failed: %s", esp_err_to_name(probe));
         sccb_scan();
+    }
+
+    /* SELFTEST 自检行（工作区 AGENTS.md"固件自检行"规范）：一行可 grep
+     * 的开机体检证据，serialtap 按前缀聚合做台架异常发现。本固件无
+     * WiFi，自检行只有板/传感器部分。 */
+    {
+        esp_chip_info_t ci;
+        esp_chip_info(&ci);
+        uint32_t flsz = 0;
+        esp_flash_get_size(NULL, &flsz);   /* v6：NULL=默认主 flash */
+        size_t psz = esp_psram_get_size();
+        sensor_t *s = esp_camera_sensor_get();
+        char sensor[32] = "none";
+        if (s && s->id.PID) {
+            snprintf(sensor, sizeof(sensor), "OV%04x/0x%04X",
+                     s->id.PID, s->id.PID);
+        }
+        char psram_str[12];
+        if (psz) snprintf(psram_str, sizeof(psram_str), "%uMB", (unsigned)(psz >> 20));
+        else     strlcpy(psram_str, "none", sizeof(psram_str));
+        ESP_LOGI(TAG, "SELFTEST: board=esp32s3-n16r8-usb-webcam fw=v0.1"
+                      " chip=%s rev=v%d.%d cores=%u flash=%uMB psram=%s"
+                      " sensor=%s heap=%uKB",
+                 CONFIG_IDF_TARGET, ci.revision / 100, ci.revision % 100,
+                 ci.cores, (unsigned)(flsz >> 20), psram_str,
+                 sensor, (unsigned)(esp_get_free_heap_size() >> 10));
     }
 
     uint8_t *uvc_buffer = (uint8_t *)malloc(UVC_MAX_FRAMESIZE_SIZE);
