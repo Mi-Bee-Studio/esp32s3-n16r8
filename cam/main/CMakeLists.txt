@@ -2,5 +2,6 @@ idf_component_register(SRCS "main.c" "camera_driver.c" "status_led.c" "flash_led
                     INCLUDE_DIRS "."
                     REQUIRES onvif-c esp-dl human_face_detect quirc nvs_flash spiffs
                     esp_driver_gpio esp_driver_uart esp_driver_tsens esp_wifi esp_netif esp_event esp_http_server espressif__cjson mdns
-                    espp__rtsp esp_https_ota esp_http_client app_update esp_partition espectre)
+                    espp__rtsp esp_https_ota esp_http_client app_update esp_partition espectre
+                    esp_psram)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE AI_FACE_DETECT_ENABLED=1)

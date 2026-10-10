@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
@@ -68,6 +69,13 @@ static bool s_link_flap = false;          /* 连接存活 <60s：切换预算不
  *               threshold=WPA2_PSK——WPA3/SAE 交互谈不崩的过渡模式
  *               （WPA2/WPA3 双套件）BSS 直接走 WPA2 进门（台面
  *               主路由 2.4G=WPA3-SAE 广播、auth 全超时的对策）。
+ *   p6 txpwr   p5 参数 + TX 功率降档 10dBm + 显式国家码 CN——软件
+ *               阶梯最后一搏，针对单板射频嫌疑：PA 满功率（默认
+ *               ~19.5dBm）在天线匹配差的板上进非线性区/EVM 超标，
+ *               管理帧 1Mbps 低阶调制能过而高阶数据帧（EAPOL）被
+ *               AP 静默丢弃的先例；另默认 country=01（世界安全模式）
+ *               对 ch12/13 限功率+被动扫描，显式 CN 放开。再失败=
+ *               硬件实锤，软件侧无牌可打。
  */
 #define STA_PROFILE_DEFAULT 0
 #define STA_PROFILE_STEER   1
@@ -75,9 +83,11 @@ static bool s_link_flap = false;          /* 连接存活 <60s：切换预算不
 #define STA_PROFILE_LEGACY  3
 #define STA_PROFILE_RANDMAC 4
 #define STA_PROFILE_WPA2    5
-#define STA_PROFILE_COUNT   6
+#define STA_PROFILE_TXPWR   6
+#define STA_PROFILE_COUNT   7
 static const char *s_profile_name[STA_PROFILE_COUNT] = {
     "p0-default", "p1-steer", "p2-ht20", "p3-legacy", "p4-randmac", "p5-wpa2",
+    "p6-txpwr",
 };
 static int s_sta_profile = STA_PROFILE_DEFAULT;
 static TickType_t s_last_connect_req_tick = 0;  /* 最近一次连接请求时刻 */
@@ -191,21 +201,66 @@ static void sta_apply_mac(void)
 /*  event handler                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief  SELFTEST 自检行（wifi 部分）：最强 5 个 BSS + 配置网 RSSI。
+ *         行格式规范见工作区 AGENTS.md"固件自检行"——serialtap 按
+ *         "SELFTEST:" 前缀 grep 聚合做台架异常发现。设备日志含真实
+ *         SSID（本地日志不入仓，仓库侧脱敏规范不变）。
+ */
+static void selftest_log_wifi_scan(const wifi_ap_record_t *recs, uint16_t n,
+                                   const char *p1, const char *p2)
+{
+    char top_str[240] = "-";
+    size_t off = 0;
+    int top = n < 5 ? n : 5;
+    for (int i = 0; i < top; i++) {
+        char item[56];
+        int wl = snprintf(item, sizeof(item), "%s%ddBm ch%u %.24s",
+                          off ? "; " : "", recs[i].rssi,
+                          (unsigned)recs[i].primary,
+                          (const char *)recs[i].ssid);
+        if (wl < 0 || off + (size_t)wl + 1 > sizeof(top_str)) break;
+        memcpy(top_str + off, item, (size_t)wl + 1);
+        off += (size_t)wl;
+    }
+    char ours_str[100] = "-";
+    if (p1[0] || p2[0]) {
+        ours_str[0] = '\0';
+        for (int c = 0; c < 2; c++) {
+            const char *ssid = c ? p2 : p1;
+            if (!ssid[0]) continue;
+            int8_t best = -128;
+            for (uint16_t i = 0; i < n; i++) {
+                if (strcmp((const char *)recs[i].ssid, ssid) == 0 &&
+                    recs[i].rssi > best) {
+                    best = recs[i].rssi;
+                }
+            }
+            char item[52];
+            snprintf(item, sizeof(item), "%s%.24s=%ddBm",
+                     ours_str[0] ? "," : "", ssid, best);
+            strlcat(ours_str, item, sizeof(ours_str));
+        }
+    }
+    ESP_LOGI(TAG, "SELFTEST: wifi aps=%u top=\"%s\" ours=\"%s\"",
+             (unsigned)n, top_str, ours_str);
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *event_data)
 {
     if (base == WIFI_EVENT) {
         switch (id) {
         case WIFI_EVENT_STA_START: {
-            /* 双网都已配置时开机择优：快扫一次，信号强 ≥8dB 者胜出；
-             * 否则沿用上次好网。.119 板位主网"弱而不断"，纯失败转移
-             * 永远不会触发，必须在这里比 RSSI。扫描 ~1-2s，仅开机一次。 */
+            /* 开机一次快扫两用：①SELFTEST 自检行（空口环境证据）；
+             * ②双网都已配置时择优：信号强 ≥8dB 者胜出，否则沿用上次
+             * 好网——.119 板位主网"弱而不断"，纯失败转移永远不会触发，
+             * 必须在这里比 RSSI。扫描 ~1-2s，仅开机一次。
+             * p4+ 档位跳过：MAC 是按 s_using_secondary 那个 SSID 派生的，
+             * 升档后连的就是它，重选会造出"MAC 与网络错配"。 */
             const char *p1 = config_get_wifi_ssid();
             const char *p2 = config_get_wifi_ssid_2();
-            /* p4 档位跳过重选：MAC 是按 s_using_secondary 那个 SSID 派生的，
-             * 升档后连的就是它，重选会造出"MAC 与网络错配" */
-            if (s_sta_profile < STA_PROFILE_RANDMAC &&
-                p1[0] && p2[0] && strcmp(p1, p2) != 0) {
+            if (s_sta_profile < STA_PROFILE_RANDMAC) {
                 wifi_scan_config_t sc = { 0 };
                 sc.show_hidden = false;
                 if (esp_wifi_scan_start(&sc, true) == ESP_OK) {
@@ -213,23 +268,26 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                     esp_wifi_scan_get_ap_num(&n);
                     wifi_ap_record_t *recs = malloc(sizeof(wifi_ap_record_t) * (n ? n : 1));
                     if (recs && esp_wifi_scan_get_ap_records(&n, recs) == ESP_OK) {
-                        int8_t r1 = -128, r2 = -128;
-                        for (int i = 0; i < n; i++) {
-                            if (strcmp((const char *)recs[i].ssid, p1) == 0 && recs[i].rssi > r1) r1 = recs[i].rssi;
-                            if (strcmp((const char *)recs[i].ssid, p2) == 0 && recs[i].rssi > r2) r2 = recs[i].rssi;
+                        selftest_log_wifi_scan(recs, n, p1, p2);
+                        if (p1[0] && p2[0] && strcmp(p1, p2) != 0) {
+                            int8_t r1 = -128, r2 = -128;
+                            for (int i = 0; i < n; i++) {
+                                if (strcmp((const char *)recs[i].ssid, p1) == 0 && recs[i].rssi > r1) r1 = recs[i].rssi;
+                                if (strcmp((const char *)recs[i].ssid, p2) == 0 && recs[i].rssi > r2) r2 = recs[i].rssi;
+                            }
+                            bool want2 = s_using_secondary;
+                            if (r1 > -128 && r2 > -128) {
+                                if (r2 - r1 >= 8)       want2 = true;
+                                else if (r1 - r2 >= 8)  want2 = false;
+                                /* 差距 <8dB：保持 last_net */
+                                ESP_LOGI(TAG, "boot pick: '%s' %ddBm vs '%s' %ddBm → %s",
+                                         p1, r1, p2, r2, want2 ? "secondary" : "primary");
+                            } else if (r2 > -128 && r1 == -128) {
+                                want2 = true;   /* 主网不在空中 */
+                            }
+                            s_using_secondary = want2;
                         }
                         free(recs);
-                        bool want2 = s_using_secondary;
-                        if (r1 > -128 && r2 > -128) {
-                            if (r2 - r1 >= 8)       want2 = true;
-                            else if (r1 - r2 >= 8)  want2 = false;
-                            /* 差距 <8dB：保持 last_net */
-                            ESP_LOGI(TAG, "boot pick: '%s' %ddBm vs '%s' %ddBm → %s",
-                                     p1, r1, p2, r2, want2 ? "secondary" : "primary");
-                        } else if (r2 > -128 && r1 == -128) {
-                            want2 = true;   /* 主网不在空中 */
-                        }
-                        s_using_secondary = want2;
                     } else { free(recs); }
                 }
             }
@@ -341,6 +399,15 @@ static void sta_apply_profile_radio(void)
              esp_err_to_name(perr),
              bw == WIFI_BW20 ? "20MHz" : "40MHz",
              esp_err_to_name(berr));
+    /* 兼容阶梯 p6：TX 功率降档 + 显式国家码（档位表注释）。功率单位
+     * 0.25dBm，40=10dBm；只在 p6 设置、不回写默认——阶梯单调不降档，
+     * 重启回 p0 时 rf 校准默认功率自然恢复。 */
+    if (s_sta_profile >= STA_PROFILE_TXPWR) {
+        esp_err_t tp_err = esp_wifi_set_max_tx_power(40);   /* 10dBm */
+        esp_err_t cc_err = esp_wifi_set_country_code("CN", false);
+        ESP_LOGW(TAG, "p6 tx tune: max_tx=10dBm (%s) country=CN (%s)",
+                 esp_err_to_name(tp_err), esp_err_to_name(cc_err));
+    }
 }
 
 /** Apply the given network's credentials to the running STA and connect. */
