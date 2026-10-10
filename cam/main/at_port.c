@@ -35,6 +35,7 @@
 #include "wifi_manager.h"
 #include "ai_pipeline.h"
 #include "flash_led.h"
+#include "time_sync.h"   /* 契约 v2.1：ntp_server* 写入后重启 SNTP */
 
 /* ── 小工具 ────────────────────────────────────────────────────── */
 
@@ -352,6 +353,8 @@ static void cfg_get_device_name(char *buf, size_t len) { snprintf(buf, len, "%s"
 static void cfg_get_wifi_ssid(char *buf, size_t len)   { snprintf(buf, len, "%s", config_get_wifi_ssid()); }
 static void cfg_get_wifi_ssid_2(char *buf, size_t len) { snprintf(buf, len, "%s", config_get_wifi_ssid_2()); }
 static void cfg_get_timezone(char *buf, size_t len)    { snprintf(buf, len, "%s", config_get_timezone()); }
+static void cfg_get_ntp_server1(char *buf, size_t len) { snprintf(buf, len, "%s", config_get_ntp_server1()); }
+static void cfg_get_ntp_server2(char *buf, size_t len) { snprintf(buf, len, "%s", config_get_ntp_server2()); }
 static void cfg_get_cam_framesize(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_cam_framesize()); }
 static void cfg_get_cam_fps(char *buf, size_t len)     { snprintf(buf, len, "%u", (unsigned)config_get_cam_fps()); }
 static void cfg_get_cam_quality(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_cam_quality()); }
@@ -427,6 +430,26 @@ static esp_err_t cfg_set_timezone(const char *v)
         tzset();
     }
     return ret;
+}
+/* 契约 v2.1：SNTP 源键（空 = 清回公网池，允许空串）；写入后重启 SNTP 即时生效 */
+static esp_err_t cfg_set_ntp_server(const char *key, const char *v)
+{
+    if (!cfg_str_fits(key, v)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t ret = cfg_write(key, v);
+    if (ret == ESP_OK) {
+        time_sync_restart();
+    }
+    return ret;
+}
+static esp_err_t cfg_set_ntp_server1(const char *v)
+{
+    return cfg_set_ntp_server("ntp_server1", v);
+}
+static esp_err_t cfg_set_ntp_server2(const char *v)
+{
+    return cfg_set_ntp_server("ntp_server2", v);
 }
 static esp_err_t cfg_set_cam_framesize(const char *v)
 {
@@ -595,6 +618,8 @@ static const at_cfg_field_t s_cfg_fields[] = {
     { "wifi_ssid_2",      AT_CFG_STR, false, cfg_get_wifi_ssid_2,  cfg_set_wifi_ssid_2 },
     { "wifi_pass_2",      AT_CFG_STR, true,  NULL,                 cfg_set_wifi_pass_2 },
     { "timezone",         AT_CFG_STR, false, cfg_get_timezone,     cfg_set_timezone },
+    { "ntp_server1",      AT_CFG_STR, false, cfg_get_ntp_server1,  cfg_set_ntp_server1 },
+    { "ntp_server2",      AT_CFG_STR, false, cfg_get_ntp_server2,  cfg_set_ntp_server2 },
     { "cam_framesize",    AT_CFG_U8,  false, cfg_get_cam_framesize, cfg_set_cam_framesize },
     { "cam_fps",          AT_CFG_U8,  false, cfg_get_cam_fps,      cfg_set_cam_fps },
     { "cam_quality",      AT_CFG_U8,  false, cfg_get_cam_quality,  cfg_set_cam_quality },
