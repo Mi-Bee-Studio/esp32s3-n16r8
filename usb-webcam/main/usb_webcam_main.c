@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
+#include "driver/i2c_master.h"
 #include "camera_pin.h"
 #include "esp_camera.h"
 #include "usb_device_uvc.h"
@@ -31,6 +32,47 @@ static const char *TAG = "usb_webcam";
  * （esp-iot-solution 对 S3 的同款取值） */
 #define UVC_MAX_FRAMESIZE_SIZE  (75 * 1024)
 
+/**
+ * @brief  SCCB 总线扫描（诊断用）：枚举 SIOD/SIOC 上所有应答的 7bit 地址。
+ *         换摄像头模块探测失败时区分三种情况：无任何应答=没插到位/插反/
+ *         供电不通；有应答但驱动不认=型号不支持（看地址猜传感器家族）；
+ *         应答且被驱动认出=正常。独立于 esp32-camera 的 SCCB 实现，
+ *         扫完即拆总线，不与后续 camera init 冲突。
+ */
+static void sccb_scan(void)
+{
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = -1,
+        .sda_io_num = CAMERA_PIN_SIOD,
+        .scl_io_num = CAMERA_PIN_SIOC,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+    };
+    i2c_master_bus_handle_t bus = NULL;
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "sccb scan: bus init %s", esp_err_to_name(err));
+        return;
+    }
+    int found = 0;
+    char line[80] = "SCCB devices at:";
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        if (i2c_master_probe(bus, addr, pdMS_TO_TICKS(20)) == ESP_OK) {
+            char one[10];
+            snprintf(one, sizeof(one), " 0x%02X", addr);
+            strncat(line, one, sizeof(line) - strlen(line) - 1);
+            found++;
+        }
+    }
+    if (found == 0) {
+        ESP_LOGW(TAG, "SCCB scan: NO device answered — module not seated / wrong orientation / no power");
+    } else {
+        ESP_LOGI(TAG, "%s", line);
+        /* 常见传感器 7bit 地址：0x21/0x30=OV2640 系, 0x3C=OV5640/OV3660/NT99141,
+         * 0x1E=GC0308/GC2145, 0x10=OV7670, 0x3D=SC 系列, 0x2D=BF 系列 */
+    }
+    i2c_del_master_bus(bus);
+}
+
 typedef struct {
     camera_fb_t *cam_fb_p;
     uvc_fb_t uvc_fb;
@@ -41,6 +83,25 @@ static fb_t s_fb;
 static esp_err_t camera_init(uint32_t xclk_freq_hz, pixformat_t pixel_format,
                              framesize_t frame_size, int jpeg_quality, uint8_t fb_count)
 {
+    /* 去重 + 换参重配（上游例程同款）：esp_camera_init 连调两次是未定义
+     * 行为——分辨率切换必须先 return_all + deinit 再重 init。 */
+    static bool inited = false;
+    static uint32_t cur_xclk = 0;
+    static framesize_t cur_size = 0;
+    static uint8_t cur_fb_count = 0;
+
+    if (inited && cur_xclk == xclk_freq_hz && cur_size == frame_size
+        && cur_fb_count == fb_count) {
+        ESP_LOGD(TAG, "camera already inited");
+        return ESP_OK;
+    }
+    if (inited) {
+        esp_camera_return_all();
+        esp_camera_deinit();
+        inited = false;
+        ESP_LOGI(TAG, "camera RESTART (reconfig)");
+    }
+
     camera_config_t camera_config = {
         .pin_pwdn     = CAMERA_PIN_PWDN,
         .pin_reset    = CAMERA_PIN_RESET,
@@ -81,7 +142,8 @@ static esp_err_t camera_init(uint32_t xclk_freq_hz, pixformat_t pixel_format,
     sensor_t *s = esp_camera_sensor_get();
     ESP_LOGI(TAG, "sensor detected: PID=0x%x (%s)", s->id.PID,
              (s->id.PID == OV5640_PID) ? "OV5640" :
-             (s->id.PID == OV3660_PID) ? "OV3660" : "other");
+             (s->id.PID == OV3660_PID) ? "OV3660" :
+             (s->id.PID == OV2640_PID) ? "OV2640" : "other");
 #if CONFIG_CAMERA_VFLIP
     s->set_vflip(s, 1);
 #endif
@@ -92,8 +154,13 @@ static esp_err_t camera_init(uint32_t xclk_freq_hz, pixformat_t pixel_format,
     camera_sensor_info_t *s_info = esp_camera_sensor_get_info(&(s->id));
     if (s_info == NULL || !s_info->support_jpeg) {
         ESP_LOGE(TAG, "sensor does not support JPEG output");
+        esp_camera_deinit();   /* 探测成功但不合用：干净退出，别留半初始化状态 */
         return ESP_ERR_NOT_SUPPORTED;
     }
+    cur_xclk = xclk_freq_hz;
+    cur_size = frame_size;
+    cur_fb_count = fb_count;
+    inited = true;
     return ESP_OK;
 }
 
@@ -176,6 +243,17 @@ void app_main(void)
              CAMERA_MODULE_NAME, CAMERA_XCLK_FREQ,
              UVC_FRAMES_INFO[0][0].width, UVC_FRAMES_INFO[0][0].height,
              UVC_FRAMES_INFO[0][0].rate);
+
+    /* 开机传感器自检：先 SCCB 总线扫描（换模块诊断），再驱动级探测。
+     * 换摄像头模块即刻在串口日志看到结果，不用等宿主打开摄像头盲猜。
+     * 失败只告警不阻断——UVC 照常枚举，宿主打开时 camera_start_cb 会重试。 */
+    sccb_scan();
+    esp_err_t probe = camera_init(CAMERA_XCLK_FREQ, PIXFORMAT_JPEG,
+                                  FRAMESIZE_VGA, 12, CAMERA_FB_COUNT);
+    if (probe != ESP_OK) {
+        ESP_LOGW(TAG, "boot camera probe failed: %s — check module seating/orientation",
+                 esp_err_to_name(probe));
+    }
 
     uint8_t *uvc_buffer = (uint8_t *)malloc(UVC_MAX_FRAMESIZE_SIZE);
     if (uvc_buffer == NULL) {
