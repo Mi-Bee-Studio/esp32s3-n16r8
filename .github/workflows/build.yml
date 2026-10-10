@@ -15,12 +15,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Firmware
+        working-directory: cam
         run: |
           . ${IDF_PATH}/export.sh
           idf.py set-target esp32s3
           idf.py build
 
       - name: Prepare Artifacts
+        working-directory: cam
         run: |
           mkdir -p firmware
           cp build/mibee_cam.bin firmware/

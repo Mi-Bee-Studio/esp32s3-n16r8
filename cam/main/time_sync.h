@@ -38,3 +38,9 @@ void time_get_str(char *buf, size_t len);
 
 /** @brief 应用时区设置（通过 setenv TZ + tzset），NULL/空 = CST-8 */
 void time_sync_apply_timezone(const char *tz);
+
+/**
+ * @brief 用最新配置（ntp_server1/2 键）重启 SNTP——不阻塞等待，
+ *        同步异步生效（issue #43）。
+ */
+esp_err_t time_sync_restart(void);

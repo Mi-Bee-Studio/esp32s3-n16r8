@@ -23,6 +23,9 @@
 #include "ota_updater.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
+#include "time_sync.h"
 
 static const char *TAG = "onvif_port";
 
@@ -57,6 +60,53 @@ static bool port_events_enabled(void)
     return config_get_onvif_events();   /* 契约 v1.5：MotionAlarm 生成开关 */
 }
 
+/* ---- 时间配置接缝（issue #43：apply-or-fault，绝不静默） ---- */
+
+static bool port_time_ntp_active(void)
+{
+    return time_is_synced();   /* 如实：SNTP 真同步过才报 NTP */
+}
+
+static const char *port_time_tz(void)
+{
+    return config_get_timezone();   /* 空 = 组件报 UTC */
+}
+
+static esp_err_t port_time_apply(const onvif_c_time_req_t *req)
+{
+    if (req->has_tz) {
+        esp_err_t err = config_set("timezone", req->tz);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "timezone persist failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        setenv("TZ", req->tz, 1);
+        tzset();
+    }
+    if (req->ntp_mode) {
+        /* 模式切回 NTP：按当前配置源重启 SNTP，时间由同步落地 */
+        return time_sync_restart();
+    }
+    if (req->has_utc) {
+        struct timeval tv = { .tv_sec = (time_t)req->utc_epoch, .tv_usec = 0 };
+        if (settimeofday(&tv, NULL) != 0) {
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "manual time set to %lld", (long long)req->utc_epoch);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t port_ntp_set(const char *const *servers, size_t n)
+{
+    esp_err_t e1 = config_set("ntp_server1", n > 0 ? servers[0] : "");
+    esp_err_t e2 = config_set("ntp_server2", n > 1 ? servers[1] : "");
+    if (e1 != ESP_OK) return e1;
+    if (e2 != ESP_OK) return e2;
+    ESP_LOGI(TAG, "NTP servers set (%u) — restarting SNTP", (unsigned)n);
+    return time_sync_restart();
+}
+
 esp_err_t onvif_port_start(void)
 {
     /* 运行时开关（原 onvif_start 的 config 门） */
@@ -82,6 +132,10 @@ esp_err_t onvif_port_start(void)
         .stream_uri       = port_stream_uri,
         .frame_rate       = port_frame_rate,
         .events_enabled   = port_events_enabled,
+        .time_ntp_active  = port_time_ntp_active,
+        .time_tz          = port_time_tz,
+        .time_apply       = port_time_apply,
+        .ntp_set          = port_ntp_set,
         .http_port        = 80,
         .wdt_watch_discovery = true,
         .mdns_hostname    = hostname,

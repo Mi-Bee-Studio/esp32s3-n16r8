@@ -82,7 +82,9 @@ const char *config_get_wifi_pass(void);
 const char *config_get_wifi_ssid_2(void);   /* 备用网络（可空） */
 const char *config_get_wifi_pass_2(void);
 const char *config_get_device_name(void);
-const char *config_get_timezone(void);      /* POSIX TZ，空 = UTC（契约 §3.1） */
+const char *config_get_timezone(void);
+const char *config_get_ntp_server1(void);   /* 契约 v2.1：空 = 内置公网池 */
+const char *config_get_ntp_server2(void);   /* 契约 v2.1：空 = 内置公网池 */      /* POSIX TZ，空 = UTC（契约 §3.1） */
 bool        config_get_allow_ap_fallback(void); /* STA 失败是否兜底 AP（默认开） */
 uint8_t     config_get_xclk_freq_mhz(void); /* ∈{10,16,20}，本板默认 16（契约 §5） */
 uint8_t     config_get_cam_framesize(void);
