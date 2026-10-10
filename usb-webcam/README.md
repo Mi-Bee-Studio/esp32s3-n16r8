@@ -37,6 +37,16 @@ serialtap flash ch343 \
 - 分区表 `nvs`/`phy_init` 偏移与 cam/ 一致：**覆盖刷本固件不动 cam 的 NVS**，两固件可随时互换重刷（cam 恢复后配置原样）。
 - 烧完 CH343 口按 RTS 复位，原生 USB 口重插一次即枚举 `MiBee USB Webcam (N16R8)`。
 
+## 设计要点：XCLK 外部供时钟（pin_xclk=-1）
+
+esp32-camera 在 S3 上 `CAMERA_ENABLE_OUT_CLOCK` 是**空宏**（假设 LCD_CAM 出 XCLK），而
+LCD_CAM 要到 cam_config（探测成功之后）才配置——探测期 XCLK 引脚被 `gpio_matrix_out`
+接到 LCD_CAM 的 CAM_CLK（此时 `cam_clk_sel=3`＝无时钟）＝死时钟。OV5640 无 XCLK 也应答
+SCCB 所以 cam 固件从没暴露此问题；**本 OV2640 模组没活 XCLK 不理寄存器** → 探测恒败
+（2026-10-10 定位：自备 LEDC XCLK 的裸读恒通、驱动探测恒败的 52s 分水岭假象实为每次
+deinit 后引脚路由恢复）。修法：`camera_config.pin_xclk=-1`（驱动留的外部供时钟口子，
+ll_cam_config 不碰引脚）+ 固件自起 LEDC 16MHz 永久供给。
+
 ## 已知限制 / Roadmap
 
 - **无 OTA**（已登记缺口）：本用途的目标单元 WiFi 已坏（硬件），无升级通道；恢复手段 = CH343/原生口重刷（serialtap 正道）。若日后给 WiFi 正常的板用本固件，按家族 `/api/ota` 模式补双 OTA 槽。
