@@ -19,6 +19,9 @@
 #include <time.h>
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_psram.h"
 #include "nvs_flash.h"
 #include "esp_spiffs.h"
 #include <errno.h>
@@ -282,6 +285,29 @@ void app_main(void)
         if (status_led_init() != ESP_OK) {
             ESP_LOGW(TAG, "Status LED init failed — wifi status colors unavailable");
         }
+    }
+
+    /* ---- 4a. SELFTEST 自检行（工作区 AGENTS.md"固件自检行"规范）------
+     * 一行可 grep 的开机体检证据：serialtap 按前缀聚合做台架异常发现
+     * （板间横向对比：PSRAM 没起来、传感器换了、flash 缩水一眼可见）。
+     * wifi 部分由 wifi_manager 在开机快扫后补一行 SELFTEST: wifi ...。 */
+    {
+        esp_chip_info_t ci;
+        esp_chip_info(&ci);
+        uint32_t flsz = 0;
+        esp_flash_get_size(NULL, &flsz);   /* v6：NULL=默认主 flash */
+        size_t psz = esp_psram_get_size();
+        sensor_t *s = esp_camera_sensor_get();
+        char sensor[32] = "none";
+        if (s && s->id.PID) {
+            snprintf(sensor, sizeof(sensor), "%.16s/0x%04X",
+                     camera_sensor_name(), s->id.PID);
+        }
+        ESP_LOGI(TAG, "SELFTEST: board=esp32s3-n16r8-cam fw=v0.1 chip=%s rev=v%d.%d"
+                      " cores=%u flash=%uMB psram=%uMB sensor=%s heap=%uKB",
+                 CONFIG_IDF_TARGET, ci.revision / 100, ci.revision % 100, ci.cores,
+                 (unsigned)(flsz >> 20), (unsigned)(psz >> 20), sensor,
+                 (unsigned)(esp_get_free_heap_size() >> 10));
     }
 
     /* ---- 5. Web server + MJPEG streamer ----------------------------- */
